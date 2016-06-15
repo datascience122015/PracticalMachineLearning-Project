@@ -1,0 +1,183 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Suparna Sen"
+date: "June 14, 2016"
+output: html_document
+---
+## Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: <http://groupware.les.inf.puc-rio.br/har> (see the section on the Weight Lifting Exercise Dataset).
+
+### Data
+The training data for this project are available here: <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>
+The test data are available here: <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>
+The data for this project come from this source: <http://groupware.les.inf.puc-rio.br/har>. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.
+
+### Goal
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.
+
+## Loading Required Packages
+```{r, results='hide'}
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+library(randomForest)
+library(corrplot)
+
+```
+
+### Set seed for reproducibility 
+```{r}
+set.seed(12345)
+```
+
+### Getting & Loading data 
+```{r}
+trainUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+training <- read.csv(url(trainUrl), na.strings=c("NA","#DIV/0!",""))
+testing <- read.csv(url(testUrl), na.strings=c("NA","#DIV/0!",""))
+dim(training); dim(testing)
+
+trainingCols<-colnames(training)
+testingCols<-colnames(testing)
+```
+
+## Data Processing
+Aim is to compute the prediction only on the accelerometers values of belt, forearm, arm and dumbell. So, the non-accelerometer measures are discard.
+```{r}
+# Verify variable names in traing and test set (excluding classe and problem_id)
+all.equal(trainingCols[1:length(trainingCols)-1], testingCols[1:length(testingCols)-1])
+
+# Eliminating variables with mostly NA
+NAS<- sapply(training, function(x) mean(is.na(x))) > 0.95
+training <- training[, NAS==FALSE]
+testing  <- testing[, NAS==FALSE]
+dim(training); dim(testing)
+
+# Delete some extraneous/ irrelevant variables (1 to 7) : X, user_name, raw_timestamp_part_1, raw_timestamp_part_,2 cvtd_timestamp, new_window, num_window
+training  <- training[, -c(1:7)]
+testing   <- testing[, -c(1:7)]
+dim(training); dim(testing)
+```
+
+### Remove NearZeroVariance variables
+```{r}
+nzv <- nearZeroVar(training, saveMetrics=TRUE)
+training <- training[,nzv$nzv==FALSE]
+
+nzv<- nearZeroVar(testing,saveMetrics=TRUE)
+testing <- testing[,nzv$nzv==FALSE]
+dim(training); dim(testing)
+```
+
+### Preprocessing variables
+```{r}
+v <- which(lapply(training, class) %in% "numeric")
+
+preObj <-preProcess(training[,v],method=c('knnImpute', 'center', 'scale'))
+trainPP <- predict(preObj, training[,v])
+trainPP$classe <- training$classe
+
+testPP <-predict(preObj,testing[,v])
+```
+
+### Creating cross validation set (Partitioning the Data)
+The training set is divided in two parts, one for training and the other for cross validation
+```{r}
+inTrain = createDataPartition(trainPP$classe, p = 3/4, list=FALSE)
+trainSet = trainPP[inTrain,]
+crossValidation = trainPP[-inTrain,]
+```
+
+# The Model
+Three methods will be applied to model the regressions (in the Train dataset) and the best one (with higher accuracy when applied to the Test dataset) will be used for the quiz predictions. 
+
+The methods are: 
+* Random Forests, 
+* Decision Tree and 
+* Generalized Boosted Model.
+
+A Confusion Matrix is plotted at the end of each analysis to better visualize the accuracy of the models.
+
+## I. Prediction with Random Forests
+```{r,echo=TRUE}
+# model fit
+(random_forest=randomForest(classe~.,data=trainSet,importance=TRUE))
+
+# prediction on cross validation dataset
+predictionRF <- predict(random_forest, crossValidation, type = "class")
+cmRF <- confusionMatrix(predictionRF, crossValidation$classe)
+cmRF
+
+# Plot Confusion Matrix
+plot(cmRF$table, col = cmRF$byClass, main = paste("Random Forest Confusion Matrix: Accuracy =", round(cmRF$overall['Accuracy'], 4)))
+
+```
+
+## II. Prediction with Decision Tree
+```{r,echo=TRUE}
+# model fit
+decision_tree <- rpart(classe ~ ., data=trainSet, method="class")
+
+# Plot Decision Tree
+fancyRpartPlot(decision_tree)
+
+# prediction on cross validation dataset
+predictDT <- predict(decision_tree, newdata=crossValidation, type="class")
+cmDT <- confusionMatrix(predictDT, crossValidation$classe)
+cmDT
+
+# plot matrix results
+plot(cmDT$table, col = cmDT$byClass, 
+     main = paste("Decision Tree - Accuracy =",
+                  round(cmDT$overall['Accuracy'], 4)))
+```
+
+## III. Prediction with Generalized Boosted Model
+```{r,echo=TRUE}
+GBM <- trainControl(method = "repeatedcv", number = 5, repeats = 1)
+modGBM  <- train(classe ~ ., data=trainSet, method = "gbm",trControl = GBM, verbose = FALSE)
+modGBM$finalModel
+
+# prediction on cross validation dataset
+predictGBM <- predict(modGBM, newdata=crossValidation)
+cmGBM <- confusionMatrix(predictGBM, crossValidation$classe)
+cmGBM
+
+# plot matrix results
+plot(cmGBM$table, col = cmGBM$byClass, 
+     main = paste("GBM - Accuracy =", round(cmGBM$overall['Accuracy'], 4)))
+
+```
+
+# Selected Model & applying to the Test Data
+The accuracy of the above three regression modeling methods above are:
+I.	  Random Forest : 0.9931
+II. 	Decision Tree : 0.6754
+III.  GBM           : 0.9447
+
+The Random Forest model is selected to predict the 20 quiz results (testing dataset) as shown below.
+
+```{r,echo=TRUE}
+# model fit
+(modRF=randomForest(classe~.,data=training,importance=TRUE))
+
+# prediction on TEST dataset
+predictionRF_FINAL <- predict(modRF, newdata=testing, type = "class")
+predictionRF_FINAL
+```
+
+
+
+
+
+
+
+
+
+
+
+
